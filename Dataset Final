@@ -1,0 +1,73 @@
+import pandas as pd
+import numpy as np
+import os
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+
+# acumulo el sentimiento del finde en el viernes para que tras el lag quede en el lunes
+def acumular_finde(serie):
+    serie_acum = serie.copy()
+    for fecha in serie.index:
+        if fecha.weekday() == 4:  # viernes
+            sabado  = fecha + pd.Timedelta(days=1)
+            domingo = fecha + pd.Timedelta(days=2)
+            vals = [serie_acum.loc[fecha]] if serie_acum.loc[fecha] != 0 else []
+            for dia in [sabado, domingo]:
+                if dia in serie.index and serie.loc[dia] != 0:
+                    vals.append(serie.loc[dia])
+            serie_acum.loc[fecha] = np.mean(vals) if vals else 0
+    return serie_acum
+
+for empresa in empresas:
+    fin = pd.read_csv(f'financiero_{empresa}.csv', index_col='date', parse_dates=True)
+
+    fin['open_t'] = fin['open']
+    # variable objetivo: retorno simple diario en u.m.
+    fin['retorno_simple'] = fin['adj_close'].diff()
+    # volatilidad historica como desviacion tipica del retorno en ventana de 20 dias
+    fin['volatilidad_20'] = fin['retorno_simple'].rolling(20).std()
+
+    vader = pd.read_csv(f'sentimiento_{empresa}_vader_daily.csv')
+    vader['date'] = pd.to_datetime(vader['date'])
+    vader = vader.set_index('date')[['vader_mean']]
+
+    finbert = pd.read_csv(f'sentimiento_{empresa}_finbert_daily.csv')
+    finbert['date'] = pd.to_datetime(finbert['date'])
+    finbert = finbert.set_index('date')[['finbert_mean']]
+
+    # creo un rango completo incluyendo fines de semana para poder acumular el sentimiento
+    fecha_inicio = min(vader.index.min(), finbert.index.min(), fin.index.min())
+    fecha_fin    = max(vader.index.max(), finbert.index.max(), fin.index.max())
+    rango_completo = pd.date_range(start=fecha_inicio, end=fecha_fin, freq='D')
+
+    vader_full   = vader.reindex(rango_completo).fillna(0)
+    finbert_full = finbert.reindex(rango_completo).fillna(0)
+
+    # acumulo finde en viernes, tras el lag quedara en el lunes
+    vader_full['vader_mean']     = acumular_finde(vader_full['vader_mean'])
+    finbert_full['finbert_mean'] = acumular_finde(finbert_full['finbert_mean'])
+
+    df = fin[['retorno_simple', 'adj_close', 'volume', 'volatilidad_20']].copy()
+    df = df.join(vader_full[['vader_mean']],     how='left')
+    df = df.join(finbert_full[['finbert_mean']], how='left')
+
+    # dias sin noticias los trato como sentimiento neutro
+    df['vader_mean']   = df['vader_mean'].fillna(0)
+    df['finbert_mean'] = df['finbert_mean'].fillna(0)
+
+    # uso lags para no filtrar informacion futura en el modelo
+    df['close_lag1']          = df['adj_close'].shift(1)
+    df['volume_lag1']         = df['volume'].shift(1)
+    df['volatilidad_20_lag1'] = df['volatilidad_20'].shift(1)
+    df['vader_lag1']          = df['vader_mean'].shift(1)
+    df['finbert_lag1']        = df['finbert_mean'].shift(1)
+
+    df = df.drop(columns=['adj_close', 'volume', 'volatilidad_20',
+                           'vader_mean', 'finbert_mean'])
+
+    df = df.dropna()
+
+    df.to_csv(f'dataset_{empresa}.csv')
+    print(f"{empresa}: {len(df)} filas guardadas")
