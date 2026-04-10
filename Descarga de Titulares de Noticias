@@ -1,0 +1,68 @@
+# Librerias necesarias
+import pandas as pd
+from pygooglenews import GoogleNews
+import datetime
+import time
+
+gn = GoogleNews()
+
+def get_news(search: str) -> list[dict]:
+    stories = []
+    start_date = datetime.date(2020, 1, 1)
+    end_date = datetime.date(2025, 12, 31)
+    delta = datetime.timedelta(days=15)  # ventanas de 15 dias para cubrir todo el periodo
+    current = start_date
+
+    while current < end_date:
+        window_end = min(current + delta, end_date)
+        try:
+            result = gn.search(
+                search,
+                from_=current.strftime('%Y-%m-%d'),
+                to_=window_end.strftime('%Y-%m-%d')
+            )
+            for item in result.get('entries', []):
+                # parseo la fecha, puede venir en varios formatos
+                published = None
+                for fmt in ('%a, %d %b %Y %X GMT', '%a, %d %b %Y %H:%M:%S %Z'):
+                    try:
+                        published = datetime.datetime.strptime(item.published, fmt)
+                        break
+                    except (ValueError, AttributeError):
+                        continue
+
+                # descarto noticias de 2026 en adelante
+                if published and published.year >= 2026:
+                    continue
+
+                # guardo solo lo que me interesa
+                story = {
+                    'title': item.get('title', ''),
+                    'published': published,
+                    'source': item.get('source', {}).get('title', '') if isinstance(item.get('source'), dict) else item.get('source', '')
+                }
+
+                stories.append(story)
+
+        except Exception as e:
+            print(f"Error en ventana {current} → {window_end}: {e}")
+
+        current = window_end
+        time.sleep(0.3)  # pequeña pausa para no saturar la api
+
+    return stories
+
+
+# empresas que quiero analizar con sus queries de busqueda
+empresas = {
+    'microsoft': 'Microsoft OR MSFT',
+    'meta':      'Meta OR META',
+    'google':    'Google OR GOOG OR Alphabet',
+    'amazon':    'Amazon OR AMZN',
+}
+
+for nombre, query in empresas.items():
+    df = pd.DataFrame(get_news(query))
+    df = df.sort_values('published').reset_index(drop=True)
+    df.to_csv(f'noticias_{nombre}.csv', index=False)
+    print(f"{len(df)} noticias guardadas en noticias_{nombre}.csv")
