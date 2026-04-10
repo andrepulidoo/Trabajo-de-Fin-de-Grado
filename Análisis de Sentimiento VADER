@@ -1,0 +1,37 @@
+import pandas as pd
+import os
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+analyzer = SentimentIntensityAnalyzer()
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+
+for empresa in empresas:
+    df = pd.read_csv(f'noticias_{empresa}_clean.csv')
+
+    # calculo el score vader para cada titular
+    df['vader_compound'] = df['title'].apply(
+        lambda x: analyzer.polarity_scores(str(x))['compound']
+    )
+    # etiqueto segun la recomendación de vader
+    df['vader_label'] = df['vader_compound'].apply(
+        lambda x: 'positive' if x >= 0.05 else ('negative' if x <= -0.05 else 'neutral')
+    )
+
+    df['date'] = pd.to_datetime(df['published']).dt.date
+
+    # agrego por dia
+    daily = df.groupby('date').agg(
+        vader_mean     = ('vader_compound', 'mean'),
+        vader_positive = ('vader_label', lambda x: (x == 'positive').sum()),
+        vader_negative = ('vader_label', lambda x: (x == 'negative').sum()),
+        vader_neutral  = ('vader_label', lambda x: (x == 'neutral').sum()),
+        n_noticias     = ('title', 'count')
+    ).reset_index()
+
+    df.to_csv(f'noticias_{empresa}_vader.csv', index=False)
+    daily.to_csv(f'sentimiento_{empresa}_vader_daily.csv', index=False)
+
+    print(f"{empresa}: {len(df)} noticias, {len(daily)} dias procesados")
