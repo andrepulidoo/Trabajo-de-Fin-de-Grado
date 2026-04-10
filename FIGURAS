@@ -1,0 +1,211 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.colors as mcolors
+import seaborn as sns
+import os
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 16
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+nombres  = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+
+# colores corporativos de cada empresa
+colores  = {
+    'microsoft': '#006AD7',
+    'meta':      '#21277B',
+    'google':    '#9AD9EA',
+    'amazon':    '#5F83B1'
+}
+
+
+# FIGURA 1 - Distribución de etiquetas de sentimiento
+
+# porcentajes calculados previamente para cada modelo y empresa
+datos_etiquetas = {
+    'microsoft': {'vader': [40.9, 10.7, 48.5], 'finbert': [19.5, 8.8, 71.7]},
+    'meta':      {'vader': [28.8, 21.5, 49.7], 'finbert': [9.0, 18.3, 72.7]},
+    'google':    {'vader': [34.0, 16.5, 49.5], 'finbert': [12.5, 14.9, 72.6]},
+    'amazon':    {'vader': [76.7, 14.7, 8.6],  'finbert': [13.1, 16.4, 70.5]},
+}
+
+etiquetas = ['Positivo', 'Negativo', 'Neutro']
+x = np.arange(len(etiquetas))
+width = 0.2  # ancho de cada barra
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+fig.suptitle('Distribución de Etiquetas de Sentimiento por Empresa',
+             fontsize=16, fontweight='bold')
+
+# un subplot para vader y otro para finbert
+for ax, modelo in zip(axes, ['vader', 'finbert']):
+    for i, (empresa, nombre) in enumerate(zip(empresas, nombres)):
+        vals = datos_etiquetas[empresa][modelo]
+        bars = ax.bar(x + i*width, vals, width,
+                      label=nombre, color=colores[empresa],
+                      alpha=0.85, edgecolor='white')
+        # pongo el porcentaje encima de cada barra
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width()/2,
+                    bar.get_height() + 0.5,
+                    f'{val}%', ha='center', va='bottom',
+                    fontsize=14, fontweight='bold')
+
+    ax.set_title(f'{"VADER" if modelo == "vader" else "FinBERT"}',
+                 fontweight='bold', fontsize=14)
+    ax.set_ylabel('Porcentaje (%)')
+    ax.set_ylim(0, 90)
+    ax.set_xticks(x + width*1.5)
+    ax.set_xticklabels(etiquetas)
+    ax.legend(fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig('fig1_distribucion_etiquetas.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+
+# FIGURA 2 - Evolución del sentimiento (media móvil 30 días)
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+fig.suptitle('Evolución del Sentimiento Diario por Empresa (Media Móvil 30 días)',
+             fontsize=18, fontweight='bold')
+axes = axes.flatten()
+
+for i, (empresa, nombre) in enumerate(zip(empresas, nombres)):
+    # cargo los scores diarios de cada modelo
+    vader   = pd.read_csv(f'sentimiento_{empresa}_vader_daily.csv')
+    finbert = pd.read_csv(f'sentimiento_{empresa}_finbert_daily.csv')
+    vader['date']   = pd.to_datetime(vader['date'])
+    finbert['date'] = pd.to_datetime(finbert['date'])
+    vader   = vader.set_index('date')
+    finbert = finbert.set_index('date')
+
+    # suavizo con media movil de 30 dias para ver la tendencia sin tanto ruido
+    vader_mm30   = vader['vader_mean'].rolling(30).mean()
+    finbert_mm30 = finbert['finbert_mean'].rolling(30).mean()
+
+    ax = axes[i]
+    ax.plot(vader.index,   vader_mm30,   color=colores[empresa],
+            linewidth=1.8, label='VADER', linestyle='-')
+    ax.plot(finbert.index, finbert_mm30, color=colores[empresa],
+            linewidth=1.8, label='FinBERT', linestyle='--', alpha=0.7)
+    # relleno la zona entre los dos modelos para ver donde difieren
+    ax.fill_between(vader.index, vader_mm30, finbert_mm30,
+                    alpha=0.08, color=colores[empresa])
+    # linea en 0 para ver cuando el sentimiento es negativo o positivo
+    ax.axhline(0, color='black', linewidth=0.8, linestyle=':')
+    ax.set_title(nombre, fontweight='bold', fontsize=16)
+    ax.set_ylabel('Score de sentimiento')
+    ax.set_xlim(pd.Timestamp('2020-01-01'), pd.Timestamp('2025-12-31'))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.legend(fontsize=16)
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('fig2_sentimiento_evolucion.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+
+# FIGURA 3 - Evolución del precio de cierre
+
+# pongo las 4 empresas en el mismo grafico para comparar la evolucion
+fig, ax = plt.subplots(figsize=(16, 7))
+
+for empresa, nombre in zip(empresas, nombres):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True)
+    # uso close_lag1 porque es el precio de cierre del dia anterior, que es lo que tengo en el dataset
+    ax.plot(df.index, df['close_lag1'], color=colores[empresa], linewidth=1.5, label=nombre)
+
+ax.set_title('Evolución del Precio de Cierre por Empresa (2020–2025)',
+             fontsize=18, fontweight='bold')
+ax.set_ylabel('Precio de cierre (USD)')
+ax.set_xlim(pd.Timestamp('2020-01-01'), pd.Timestamp('2025-12-31'))
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+ax.legend(fontsize=14)
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('fig3_evolucion_close.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+
+# FIGURA 4 - Distribución de retornos simples
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+fig.suptitle('Distribución de los Retornos Simples por Empresa (2020–2025)',
+             fontsize=18, fontweight='bold')
+axes = axes.flatten()
+
+for i, (empresa, nombre) in enumerate(zip(empresas, nombres)):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True)
+    retornos = df['retorno_simple'].dropna()
+    ax = axes[i]
+
+    ax.hist(retornos, bins=80, color=colores[empresa], alpha=0.85, edgecolor='white', linewidth=0.3)
+
+    # marco la media para ver si los retornos estan sesgados hacia un lado
+    media = retornos.mean()
+    ax.axvline(media, color='black', linewidth=1.2, linestyle='--', label=f'Media: {media:.3f}')
+
+    ax.set_title(nombre, fontweight='bold', fontsize=16)
+    ax.set_xlabel('Retorno simple (u.m.)')
+    ax.set_ylabel('Frecuencia')
+    ax.legend(fontsize=13)
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('fig4_distribucion_retornos.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+
+# FIGURA 5 - Matrices de correlación entre variables
+
+# variables independientes que uso en el modelo
+variables = ['retorno_simple', 'close_lag1', 'volume_lag1',
+             'volatilidad_20_lag1', 'vader_lag1', 'finbert_lag1']
+
+# nombres mas cortos para que quepan bien en la matriz
+etiquetas_vars = ['retorno_simple', 'close_lag1', 'volume_lag1',
+                  'volat._lag1', 'vader_lag1', 'finbert_lag1']
+
+# genero una matriz por empresa
+for empresa, nombre in zip(empresas, nombres):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True)
+    corr_matrix = df[variables].corr()
+    corr_matrix.index   = etiquetas_vars
+    corr_matrix.columns = etiquetas_vars
+
+    cmap_custom = mcolors.LinearSegmentedColormap.from_list(
+        'custom', ['#7B4F9E', '#FFFFFF', colores[empresa]], N=256
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    sns.heatmap(
+        corr_matrix.round(3),
+        annot=True, fmt=".3f",
+        cmap=cmap_custom,
+        center=0, vmin=-1, vmax=1,  # centro en 0 para que los negativos y positivos se vean igual
+        linewidths=0.5, linecolor='white',
+        ax=ax,
+        annot_kws={"size": 12, "family": "Times New Roman"}
+    )
+
+    ax.set_title(f'Matriz de Correlación – {nombre}',
+                 fontsize=16, fontweight='bold', pad=14,
+                 fontfamily='Times New Roman')
+    ax.tick_params(axis='x', rotation=30, labelsize=13)
+    ax.tick_params(axis='y', rotation=0,  labelsize=13)
+
+    plt.tight_layout()
+    plt.savefig(f'fig5_{empresa}_correlacion.png', dpi=150, bbox_inches='tight')
+    plt.show()
