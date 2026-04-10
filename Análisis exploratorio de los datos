@@ -1,0 +1,131 @@
+import pandas as pd
+import os
+import warnings
+from statsmodels.tsa.stattools import adfuller, kpss
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+warnings.filterwarnings('ignore')
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+nombres  = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+
+
+# ANÁLISIS EXPLORATORIO - DATOS DE SENTIMIENTO
+
+for empresa in empresas:
+    print(f"\n{empresa.upper()}")
+
+    vader   = pd.read_csv(f'sentimiento_{empresa}_vader_daily.csv')
+    finbert = pd.read_csv(f'sentimiento_{empresa}_finbert_daily.csv')
+    vader['date']   = pd.to_datetime(vader['date'])
+    finbert['date'] = pd.to_datetime(finbert['date'])
+
+    # dimensiones y rango temporal
+    print(f"VADER   : {vader.shape[0]} dias, {vader['date'].min().date()} → {vader['date'].max().date()}")
+    print(f"FinBERT : {finbert.shape[0]} dias, {finbert['date'].min().date()} → {finbert['date'].max().date()}")
+
+    # estadisticos descriptivos del score medio diario
+    print("\nvader_mean:")
+    print(vader['vader_mean'].describe().round(4).to_string())
+    print("\nfinbert_mean:")
+    print(finbert['finbert_mean'].describe().round(4).to_string())
+
+    # distribucion de etiquetas vader
+    total_v = vader['vader_positive'].sum() + vader['vader_negative'].sum() + vader['vader_neutral'].sum()
+    print("\nEtiquetas VADER:")
+    print(f"  Positivas : {vader['vader_positive'].sum():>6}  ({vader['vader_positive'].sum()/total_v*100:.1f}%)")
+    print(f"  Negativas : {vader['vader_negative'].sum():>6}  ({vader['vader_negative'].sum()/total_v*100:.1f}%)")
+    print(f"  Neutras   : {vader['vader_neutral'].sum():>6}  ({vader['vader_neutral'].sum()/total_v*100:.1f}%)")
+
+    # distribucion de etiquetas finbert
+    total_f = finbert['finbert_positive'].sum() + finbert['finbert_negative'].sum() + finbert['finbert_neutral'].sum()
+    print("\nEtiquetas FinBERT:")
+    print(f"  Positivas : {finbert['finbert_positive'].sum():>6}  ({finbert['finbert_positive'].sum()/total_f*100:.1f}%)")
+    print(f"  Negativas : {finbert['finbert_negative'].sum():>6}  ({finbert['finbert_negative'].sum()/total_f*100:.1f}%)")
+    print(f"  Neutras   : {finbert['finbert_neutral'].sum():>6}  ({finbert['finbert_neutral'].sum()/total_f*100:.1f}%)")
+
+    # compruebo que no haya nulos
+    print(f"\nNulos vader_mean   : {vader['vader_mean'].isnull().sum()}")
+    print(f"Nulos finbert_mean : {finbert['finbert_mean'].isnull().sum()}")
+
+    # noticias por dia para ver si hay dias con muy pocas
+    print(f"\nNoticias/dia VADER   - Media: {vader['n_noticias'].mean():.2f} | Max: {vader['n_noticias'].max()} | Min: {vader['n_noticias'].min()}")
+    print(f"Noticias/dia FinBERT - Media: {finbert['n_noticias'].mean():.2f} | Max: {finbert['n_noticias'].max()} | Min: {finbert['n_noticias'].min()}")
+
+
+# TEST DE ESTACIONARIEDAD - VARIABLES DE SENTIMIENTO
+
+# uso ADF y KPSS juntos porque tienen hipotesis nula opuesta
+# ADF: H0 = no estacionaria | KPSS: H0 = estacionaria
+for empresa in empresas:
+    print(f"\n{empresa.upper()}")
+
+    vader   = pd.read_csv(f'sentimiento_{empresa}_vader_daily.csv')
+    finbert = pd.read_csv(f'sentimiento_{empresa}_finbert_daily.csv')
+
+    # test para vader
+    serie_v = vader['vader_mean'].dropna()
+    adf_v   = adfuller(serie_v, autolag='AIC')
+    print(f"VADER   ADF: stat={adf_v[0]:.4f} p={adf_v[1]:.4f}")
+    try:
+        kpss_v = kpss(serie_v, regression='c', nlags='auto')
+        print(f"VADER   KPSS: stat={kpss_v[0]:.4f} p={kpss_v[1]:.4f}")
+    except:
+        print("VADER KPSS: no calculable")
+
+    # test para finbert
+    serie_f = finbert['finbert_mean'].dropna()
+    adf_f   = adfuller(serie_f, autolag='AIC')
+    print(f"FinBERT ADF: stat={adf_f[0]:.4f} p={adf_f[1]:.4f}")
+    try:
+        kpss_f = kpss(serie_f, regression='c', nlags='auto')
+        print(f"FinBERT KPSS: stat={kpss_f[0]:.4f} p={kpss_f[1]:.4f}")
+    except:
+        print("FinBERT KPSS: no calculable")
+
+
+
+# ESTADÍSTICOS DESCRIPTIVOS - VARIABLES FINANCIERAS
+
+variables = {
+    'retorno_simple':      'Retorno simple (u.m.)',
+    'close_lag1':          'Precio cierre t-1',
+    'volume_lag1':         'Volumen t-1',
+    'volatilidad_20_lag1': 'Volatilidad 20d t-1',
+}
+
+stats_list = []
+for empresa, nombre in zip(empresas, nombres):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True)
+    for col, etiqueta in variables.items():
+        stats_list.append({
+            'Empresa':      nombre,
+            'Variable':     etiqueta,
+            'Media':        round(df[col].mean(), 4),
+            'Desv. típica': round(df[col].std(), 4),
+            'Mínimo':       round(df[col].min(), 4),
+            'Máximo':       round(df[col].max(), 4),
+        })
+
+tabla = pd.DataFrame(stats_list)
+print(tabla.to_string(index=False))
+
+
+
+# TEST DE ESTACIONARIEDAD - VARIABLES FINANCIERAS
+
+for empresa, nombre in zip(empresas, nombres):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True)
+    print(f"\n{nombre.upper()}")
+
+    for col, etiqueta in [('retorno_simple',      'Retorno simple'),
+                           ('close_lag1',          'Precio cierre'),
+                           ('volume_lag1',         'Volumen'),
+                           ('volatilidad_20_lag1', 'Volatilidad 20d')]:
+
+        serie  = df[col].dropna()
+        adf_p  = adfuller(serie)[1]
+        kpss_p = kpss(serie, regression='c', nlags='auto')[1]
+
+        print(f"  {etiqueta}: ADF p={adf_p:.4f} | KPSS p={kpss_p:.4f}")
