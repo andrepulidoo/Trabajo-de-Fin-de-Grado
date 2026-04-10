@@ -1,0 +1,32 @@
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import os
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+# tickers de cada empresa y el nasdaq como referencia
+tickers = {
+    'microsoft': 'MSFT',
+    'meta':      'META',
+    'google':    'GOOG',
+    'amazon':    'AMZN',
+    'nasdaq':    '^NDX'
+}
+
+start = '2020-01-01'
+end   = '2025-12-31'
+
+datos = {}
+for nombre, ticker in tickers.items():
+    df = yf.download(ticker, start=start, end=end, auto_adjust=False, progress=False)
+    # me quedo con las columnas que voy a usar en el analisis
+    df = df[['Open', 'High', 'Low', 'Adj Close', 'Volume']].copy()
+    df.columns = ['open', 'high', 'low', 'adj_close', 'volume']
+    df.index.name = 'date'
+    datos[nombre] = df
+    print(f"{nombre}: {len(df)} dias descargados")
+
+for nombre, df in datos.items():
+    df.to_csv(f'financiero_{nombre}.csv')
+    print(f"financiero_{nombre}.csv guardado")
