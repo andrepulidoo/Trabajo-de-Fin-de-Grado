@@ -1,0 +1,68 @@
+import pandas as pd
+import os
+import re
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+# noticias que no tienen que ver con la empresa
+FILTROS_IRRELEVANTES = {
+    'amazon':    ['amazon river', 'amazon rainforest', 'amazon forest', 'amazon jungle',
+                  'amazon tribe', 'amazon women', 'amazon warriors', 'deforestation',
+                  'amazon basin', 'amazon fires', 'amazon region'],
+    'google':    ['google doodle', 'googled', 'google maps directions'],
+    'microsoft': [],
+    'meta':      ['meta analysis', 'meta-analysis', 'meta study', 'metadata']
+}
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+
+for empresa in empresas:
+    print(empresa.upper())
+
+    df = pd.read_csv(f'noticias_{empresa}.csv', on_bad_lines='skip', encoding='utf-8')
+    n_original = len(df)
+
+    # me quedo solo con las columnas que me interesan
+    df = df[[col for col in df.columns if col in ['title', 'published', 'source']]]
+
+    # elimino filas sin titulo o sin fecha
+    df = df.dropna(subset=['title', 'published'])
+
+    # convierto la fecha y filtro solo 2020-2025
+    df['published'] = pd.to_datetime(df['published'], errors='coerce')
+    df = df.dropna(subset=['published'])
+    df = df[(df['published'].dt.year >= 2020) & (df['published'].dt.year <= 2025)]
+
+    # los titulares vienen como "Titular - Fuente", me quedo solo con el titular
+    def separar_titular(texto):
+        partes = str(texto).rsplit(' - ', 1)
+        if len(partes) == 2:
+            return partes[0].strip()
+        return str(texto).strip()
+
+    df['title_clean'] = df['title'].apply(separar_titular)
+
+    # elimino noticias que no son sobre la empresa
+    filtros = FILTROS_IRRELEVANTES.get(empresa, [])
+    if filtros:
+        patron = '|'.join(filtros)
+        mask = df['title_clean'].str.lower().str.contains(patron, na=False)
+        df = df[~mask]
+
+    # elimino duplicados exactos
+    df = df.drop_duplicates(subset=['title_clean'])
+
+    # elimino duplicados aproximados normalizando el texto
+    df['title_norm'] = df['title_clean'].apply(lambda x:
+        re.sub(r'[^a-z0-9\s]', '', str(x).lower()).strip()
+    )
+    df = df.drop_duplicates(subset=['title_norm'])
+    df = df.drop(columns=['title_norm'])
+
+    df = df.sort_values('published').reset_index(drop=True)
+
+    print(f"{len(df)} noticias guardadas de {n_original} originales")
+
+    df[['title_clean', 'published', 'source']].rename(
+        columns={'title_clean': 'title'}
+    ).to_csv(f'noticias_{empresa}_clean.csv', index=False, quoting=1)
