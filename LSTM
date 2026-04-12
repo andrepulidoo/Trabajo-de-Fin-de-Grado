@@ -258,6 +258,15 @@ for empresa, nombre in zip(empresas, nombres):
 
             print(f"    {label}: MAE={mae:.3f}  RMSE={rmse:.3f}  MAPE={mape:.2f}%")
 
+           # guardamos predicciones reales en CSV
+            label_limpio = label.replace(' ', '_')
+            pred_df = pd.DataFrame({
+                'fecha': fechas_list,
+                'real':  y_real_list,
+                'pred':  y_pred_list
+            })
+            pred_df.to_csv(f'predicciones_{empresa}_{label_limpio}_{h}d.csv', index=False)
+
             resultados.append({
                 'empresa':   nombre,
                 'modelo':    label,
@@ -269,4 +278,4 @@ for empresa, nombre in zip(empresas, nombres):
 
 df_res = pd.DataFrame(resultados)
 df_res.to_csv('resultados_lstm.csv', index=False)
-print("\nresultados guardados en resultados_lstm.csv")
+print("\nResultados y predicciones guardados.")
