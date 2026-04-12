@@ -1,0 +1,272 @@
+#%%
+# prueba de hiperparametros con microsoft para elegir la mejor configuracion
+
+import os
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+import warnings
+warnings.filterwarnings('ignore')
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+TRAIN_RATIO   = 0.90
+RETRAIN_EVERY = 20
+EPOCHS  = 30
+BATCH   = 32
+
+# grid pequeño para no tardar demasiado
+WINDOWS  = [5, 10]
+UNITS1S  = [64, 128]
+UNITS2S  = [32, 64]
+DROPOUTS = [0.2, 0.3]
+
+features = ['open', 'retorno_simple', 'volume', 'volatilidad_20']
+
+early_stop = EarlyStopping(monitor='val_loss', patience=5,
+                           restore_best_weights=True, verbose=0)
+
+def crear_secuencias(X, y, window):
+    # convierto los datos en secuencias de longitud window para el lstm
+    Xs, ys = [], []
+    for i in range(window, len(X)):
+        Xs.append(X[i - window:i])
+        ys.append(y[i])
+    return np.array(Xs), np.array(ys)
+
+def construir_lstm(n_features, window, u1, u2, drop):
+    modelo = Sequential([
+        LSTM(u1, return_sequences=True, input_shape=(window, n_features)),
+        Dropout(drop),
+        LSTM(u2, return_sequences=False),
+        Dropout(drop),
+        Dense(1)
+    ])
+    modelo.compile(optimizer='adam', loss='mse')
+    return modelo
+
+df = pd.read_csv('dataset_microsoft.csv', index_col='date', parse_dates=True).dropna()
+n_train = int(len(df) * TRAIN_RATIO)
+
+# predigo la diferencia de precio en vez del precio directamente para evitar
+# problemas de extrapolacion fuera del rango de entrenamiento
+data = df[features + ['adj_close', 'target_5']].dropna()
+data['target_diff'] = data['target_5'] - data['adj_close']
+
+X_all      = data[features].values
+y_all      = data['target_diff'].values
+close_all  = data['adj_close'].values
+target_all = data['target_5'].values
+n_test     = len(data) - n_train
+
+mejor_mape   = np.inf
+mejor_params = None
+
+total    = len(WINDOWS) * len(UNITS1S) * len(UNITS2S) * len(DROPOUTS)
+i_config = 0
+
+for window in WINDOWS:
+    for u1 in UNITS1S:
+        for u2 in UNITS2S:
+            for drop in DROPOUTS:
+                i_config += 1
+                print(f"[{i_config}/{total}] window={window}, u1={u1}, u2={u2}, drop={drop}...")
+
+                y_real_list = []
+                y_pred_list = []
+
+                for i in range(n_test - 5 + 1):
+                    # reentrano cada RETRAIN_EVERY pasos con los datos disponibles hasta ese momento
+                    if i % RETRAIN_EVERY == 0:
+                        X_hist = X_all[:n_train + i]
+                        y_hist = y_all[:n_train + i]
+
+                        # normalizo solo con datos pasados para no filtrar informacion futura
+                        scaler_X = StandardScaler()
+                        scaler_y = StandardScaler()
+                        X_sc = scaler_X.fit_transform(X_hist)
+                        y_sc = scaler_y.fit_transform(y_hist.reshape(-1, 1)).flatten()
+
+                        X_seq, y_seq = crear_secuencias(X_sc, y_sc, window)
+
+                        modelo = construir_lstm(len(features), window, u1, u2, drop)
+                        modelo.fit(X_seq, y_seq,
+                                   epochs=EPOCHS,
+                                   batch_size=BATCH,
+                                   validation_split=0.1,
+                                   callbacks=[early_stop],
+                                   verbose=0)
+
+                    # prediccion para el punto actual
+                    X_pred_raw = X_all[n_train + i - window: n_train + i]
+                    X_pred_sc  = scaler_X.transform(X_pred_raw)
+                    X_pred_seq = X_pred_sc.reshape(1, window, len(features))
+
+                    y_pred_sc   = modelo.predict(X_pred_seq, verbose=0).flatten()
+                    y_pred_diff = scaler_y.inverse_transform(y_pred_sc.reshape(-1, 1)).flatten()[0]
+
+                    # sumo la diferencia predicha al precio actual para obtener el precio final
+                    precio_actual = close_all[n_train + i]
+                    y_pred_precio = precio_actual + y_pred_diff
+                    y_real_precio = target_all[n_train + i + 5 - 1]
+
+                    y_pred_list.append(y_pred_precio)
+                    y_real_list.append(y_real_precio)
+
+                mape = np.mean(np.abs((np.array(y_real_list) - np.array(y_pred_list)) / np.array(y_real_list))) * 100
+                print(f"  MAPE={mape:.2f}%")
+
+                if mape < mejor_mape:
+                    mejor_mape   = mape
+                    mejor_params = (window, u1, u2, drop)
+
+print(f"\nMejor configuracion: window={mejor_params[0]}, u1={mejor_params[1]}, u2={mejor_params[2]}, drop={mejor_params[3]}")
+print(f"Mejor MAPE: {mejor_mape:.2f}%")
+
+
+#%%
+# lstm final con las 4 empresas, 3 horizontes y 3 configuraciones (sin sentimiento, vader, finbert)
+
+import os
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+import warnings
+warnings.filterwarnings('ignore')
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+empresas = ['microsoft', 'meta', 'google', 'amazon']
+nombres  = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+
+TRAIN_RATIO   = 0.90
+HORIZONTES    = [5, 10, 20]
+RETRAIN_EVERY = 20
+
+# hiperparametros elegidos en el grid search anterior
+WINDOW  = 10
+UNITS1  = 64
+UNITS2  = 64
+DROPOUT = 0.2
+EPOCHS  = 30
+BATCH   = 32
+
+# tres configuraciones para comparar el efecto del sentimiento
+CONFIGURACIONES = {
+    'LSTM':         ['open', 'retorno_simple', 'volume', 'volatilidad_20'],
+    'LSTM VADER':   ['open', 'retorno_simple', 'volume', 'volatilidad_20', 'vader_mean'],
+    'LSTM FinBERT': ['open', 'retorno_simple', 'volume', 'volatilidad_20', 'finbert_mean'],
+}
+
+early_stop = EarlyStopping(monitor='val_loss', patience=5,
+                           restore_best_weights=True, verbose=0)
+
+def crear_secuencias(X, y, window):
+    Xs, ys = [], []
+    for i in range(window, len(X)):
+        Xs.append(X[i - window:i])
+        ys.append(y[i])
+    return np.array(Xs), np.array(ys)
+
+def construir_lstm(n_features):
+    modelo = Sequential([
+        LSTM(UNITS1, return_sequences=True, input_shape=(WINDOW, n_features)),
+        Dropout(DROPOUT),
+        LSTM(UNITS2, return_sequences=False),
+        Dropout(DROPOUT),
+        Dense(1)
+    ])
+    modelo.compile(optimizer='adam', loss='mse')
+    return modelo
+
+resultados = []
+
+for empresa, nombre in zip(empresas, nombres):
+    df = pd.read_csv(f'dataset_{empresa}.csv', index_col='date', parse_dates=True).dropna()
+    n_train = int(len(df) * TRAIN_RATIO)
+    print(f"\n{nombre.upper()}")
+
+    for h in HORIZONTES:
+        print(f"  Horizonte {h} dias")
+        target_col = f'target_{h}'
+
+        for label, features in CONFIGURACIONES.items():
+
+            # predigo la diferencia para evitar extrapolacion fuera del rango de entrenamiento
+            data = df[features + ['adj_close', target_col]].dropna().copy()
+            data['target_diff'] = data[target_col] - data['adj_close']
+
+            X_all      = data[features].values
+            y_all      = data['target_diff'].values
+            close_all  = data['adj_close'].values
+            target_all = data[target_col].values
+            n_test     = len(data) - n_train
+
+            y_real_list = []
+            y_pred_list = []
+
+            for i in range(n_test - h + 1):
+                # reentrano periodicamente con todos los datos disponibles hasta ese momento
+                if i % RETRAIN_EVERY == 0:
+                    X_hist = X_all[:n_train + i]
+                    y_hist = y_all[:n_train + i]
+
+                    scaler_X = StandardScaler()
+                    scaler_y = StandardScaler()
+                    X_sc = scaler_X.fit_transform(X_hist)
+                    y_sc = scaler_y.fit_transform(y_hist.reshape(-1, 1)).flatten()
+
+                    X_seq, y_seq = crear_secuencias(X_sc, y_sc, WINDOW)
+
+                    modelo = construir_lstm(len(features))
+                    modelo.fit(X_seq, y_seq,
+                               epochs=EPOCHS,
+                               batch_size=BATCH,
+                               validation_split=0.1,
+                               callbacks=[early_stop],
+                               verbose=0)
+
+                X_pred_raw = X_all[n_train + i - WINDOW: n_train + i]
+                X_pred_sc  = scaler_X.transform(X_pred_raw)
+                X_pred_seq = X_pred_sc.reshape(1, WINDOW, len(features))
+
+                y_pred_sc   = modelo.predict(X_pred_seq, verbose=0).flatten()
+                y_pred_diff = scaler_y.inverse_transform(y_pred_sc.reshape(-1, 1)).flatten()[0]
+
+                # precio predicho = precio actual + diferencia predicha
+                precio_actual = close_all[n_train + i]
+                y_pred_precio = precio_actual + y_pred_diff
+                y_real_precio = target_all[n_train + i + h - 1]
+
+                y_pred_list.append(y_pred_precio)
+                y_real_list.append(y_real_precio)
+
+            y_pred_arr = np.array(y_pred_list)
+            y_real_arr = np.array(y_real_list)
+
+            mae  = mean_absolute_error(y_real_arr, y_pred_arr)
+            rmse = np.sqrt(mean_squared_error(y_real_arr, y_pred_arr))
+            mape = np.mean(np.abs((y_real_arr - y_pred_arr) / y_real_arr)) * 100
+
+            print(f"    {label}: MAE={mae:.3f}  RMSE={rmse:.3f}  MAPE={mape:.2f}%")
+
+            resultados.append({
+                'empresa':   nombre,
+                'modelo':    label,
+                'horizonte': h,
+                'MAE':  round(mae, 3),
+                'RMSE': round(rmse, 3),
+                'MAPE': round(mape, 2)
+            })
+
+df_res = pd.DataFrame(resultados)
+df_res.to_csv('resultados_lstm.csv', index=False)
+print("\nresultados guardados en resultados_lstm.csv")
