@@ -1,0 +1,138 @@
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.arima.model import ARIMA
+import warnings
+warnings.filterwarnings('ignore')
+
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 13
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+empresas_csv = ['microsoft', 'meta', 'google', 'amazon']
+nombres      = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+TRAIN_RATIO  = 0.90
+
+colores = {
+    'Microsoft': '#006AD7',
+    'Meta':      '#21277B',
+    'Alphabet':  '#9AD9EA',
+    'Amazon':    '#5F83B1'
+}
+
+# -------------------------------------------------------
+# FIGURA ARIMA h=5 - 4 empresas en 2x2
+# -------------------------------------------------------
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+axes = axes.flatten()
+fig.suptitle('ARIMA — Predicciones vs Valores Reales (h=5 días)',
+             fontsize=16, fontweight='bold', y=1.01)
+
+for ax, empresa_csv, nombre in zip(axes, empresas_csv, nombres):
+    color = colores[nombre]
+
+    df = pd.read_csv(f'dataset_{empresa_csv}.csv', index_col='date', parse_dates=True).dropna()
+    serie   = df['adj_close']
+    n_train = int(len(serie) * TRAIN_RATIO)
+    train   = serie.iloc[:n_train]
+    test    = serie.iloc[n_train:]
+
+    y_true, y_pred, fechas = [], [], []
+
+    for i in range(len(test) - 5 + 1):
+        # voy añadiendo datos del test al historico conforme avanzo
+        historia = pd.concat([train, test.iloc[:i]])
+        try:
+            modelo   = ARIMA(historia, order=(0, 1, 0)).fit()
+            forecast = modelo.forecast(steps=5)
+            y_pred.append(forecast.iloc[-1])
+            y_true.append(test.iloc[i + 5 - 1])
+            fechas.append(test.index[i])
+        except:
+            continue
+
+    ax.plot(fechas, y_true, color='#888780', linewidth=1.5, label='Real', alpha=0.85)
+    ax.plot(fechas, y_pred, color=color, linewidth=1.5, linestyle='--', label='ARIMA')
+    ax.set_title(nombre, fontsize=14, fontweight='bold')
+    ax.set_xlabel('Fecha')
+    ax.set_ylabel('Precio (USD)')
+    ax.legend(fontsize=11)
+    ax.tick_params(axis='x', rotation=30, labelsize=9)
+    ax.grid(linestyle='--', alpha=0.3)
+    ax.spines[['top', 'right']].set_visible(False)
+
+plt.tight_layout()
+plt.savefig('fig_arima_pred_h5.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+# -------------------------------------------------------
+# FIGURA LSTM base h=5 - 4 empresas en 2x2
+# -------------------------------------------------------
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+axes = axes.flatten()
+fig.suptitle('LSTM — Predicciones vs Valores Reales (h=5 días)',
+             fontsize=16, fontweight='bold', y=1.01)
+
+for ax, empresa_csv, nombre in zip(axes, empresas_csv, nombres):
+    color = colores[nombre]
+    try:
+        pred_df = pd.read_csv(f'predicciones_{empresa_csv}_LSTM_5d.csv', parse_dates=['fecha'])
+        ax.plot(pred_df['fecha'], pred_df['real'], color='#888780',
+                linewidth=1.5, label='Real', alpha=0.85)
+        ax.plot(pred_df['fecha'], pred_df['pred'], color=color,
+                linewidth=1.5, linestyle='--', label='LSTM')
+    except FileNotFoundError:
+        ax.text(0.5, 0.5, 'Pendiente', transform=ax.transAxes,
+                ha='center', va='center', fontsize=12, color='gray')
+
+    ax.set_title(nombre, fontsize=14, fontweight='bold')
+    ax.set_xlabel('Fecha')
+    ax.set_ylabel('Precio (USD)')
+    ax.legend(fontsize=11)
+    ax.tick_params(axis='x', rotation=30, labelsize=9)
+    ax.grid(linestyle='--', alpha=0.3)
+    ax.spines[['top', 'right']].set_visible(False)
+
+plt.tight_layout()
+plt.savefig('fig_lstm_pred_h5.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+
+# -------------------------------------------------------
+# FIGURA LSTM + FinBERT h=10 - 4 empresas en 2x2
+# -------------------------------------------------------
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+axes = axes.flatten()
+fig.suptitle('LSTM + FinBERT — Predicciones vs Valores Reales (h=10 días)',
+             fontsize=16, fontweight='bold', y=1.01)
+
+for ax, empresa_csv, nombre in zip(axes, empresas_csv, nombres):
+    color = colores[nombre]
+    try:
+        pred_df = pd.read_csv(f'predicciones_{empresa_csv}_LSTM_FinBERT_10d.csv', parse_dates=['fecha'])
+        ax.plot(pred_df['fecha'], pred_df['real'], color='#888780',
+                linewidth=1.5, label='Real', alpha=0.85)
+        ax.plot(pred_df['fecha'], pred_df['pred'], color=color,
+                linewidth=1.5, linestyle='--', label='LSTM + FinBERT')
+    except FileNotFoundError:
+        ax.text(0.5, 0.5, 'Pendiente', transform=ax.transAxes,
+                ha='center', va='center', fontsize=12, color='gray')
+
+    ax.set_title(nombre, fontsize=14, fontweight='bold')
+    ax.set_xlabel('Fecha')
+    ax.set_ylabel('Precio (USD)')
+    ax.legend(fontsize=11)
+    ax.tick_params(axis='x', rotation=30, labelsize=9)
+    ax.grid(linestyle='--', alpha=0.3)
+    ax.spines[['top', 'right']].set_visible(False)
+
+plt.tight_layout()
+plt.savefig('fig_lstm_finbert_pred_h10.png', dpi=150, bbox_inches='tight')
+plt.show()
