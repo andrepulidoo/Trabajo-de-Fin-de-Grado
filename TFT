@@ -1,0 +1,296 @@
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings('ignore')
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Usando: {DEVICE}")
+
+DRIVE_PATH   = '/content/'
+empresas_csv = ['microsoft', 'meta', 'google', 'amazon']
+nombres      = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+HORIZONTES   = [5, 10, 20]
+TRAIN_RATIO  = 0.90
+
+# tres configuraciones para comparar el efecto del sentimiento
+CONFIGURACIONES = {
+    'TFT':         ['open', 'retorno_simple', 'volume', 'volatilidad_20', 'adj_close'],
+    'TFT VADER':   ['open', 'retorno_simple', 'volume', 'volatilidad_20', 'adj_close', 'vader_mean'],
+    'TFT FinBERT': ['open', 'retorno_simple', 'volume', 'volatilidad_20', 'adj_close', 'finbert_mean'],
+}
+
+# hiperparametros a probar en el grid search
+HIDDENS  = [32, 64, 128]
+HEADS    = [2, 4, 8]
+DROPOUTS = [0.1, 0.2, 0.3]
+WINDOWS  = [10, 20, 30]
+
+EPOCHS   = 30
+BATCH    = 32
+LR       = 1e-3
+PATIENCE = 5
+
+
+# -------------------------------------------------------
+# DATASET
+# -------------------------------------------------------
+
+class SeriesDataset(Dataset):
+    def __init__(self, X, y, window):
+        self.X      = torch.tensor(X, dtype=torch.float32)
+        self.y      = torch.tensor(y, dtype=torch.float32)
+        self.window = window
+
+    def __len__(self):
+        return len(self.X) - self.window
+
+    def __getitem__(self, idx):
+        return self.X[idx:idx+self.window], self.y[idx+self.window]
+
+
+# -------------------------------------------------------
+# ARQUITECTURA TFT
+# -------------------------------------------------------
+
+class GRN(nn.Module):
+    # gated residual network, filtra la informacion relevante antes de pasarla al siguiente bloque
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
+        super().__init__()
+        self.fc1  = nn.Linear(input_dim, hidden_dim)
+        self.fc2  = nn.Linear(hidden_dim, output_dim)
+        self.gate = nn.Linear(input_dim, output_dim)
+        self.norm = nn.LayerNorm(output_dim)
+        self.drop = nn.Dropout(dropout)
+        self.elu  = nn.ELU()
+        self.sig  = nn.Sigmoid()
+        self.proj = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
+
+    def forward(self, x):
+        h = self.elu(self.fc1(x))
+        h = self.drop(self.fc2(h))
+        g = self.sig(self.gate(x))
+        return self.norm(g * h + (1 - g) * self.proj(x))
+
+
+class VSN(nn.Module):
+    # variable selection network, aprende que variables son mas relevantes para cada prediccion
+    def __init__(self, n_features, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.grns     = nn.ModuleList([GRN(1, hidden_dim, hidden_dim, dropout) for _ in range(n_features)])
+        self.selector = nn.Sequential(GRN(n_features, hidden_dim, n_features, dropout), nn.Softmax(dim=-1))
+
+    def forward(self, x):
+        processed = torch.stack([self.grns[i](x[..., i:i+1]) for i in range(x.shape[-1])], dim=-1)
+        weights   = self.selector(x.mean(dim=1)).unsqueeze(1).unsqueeze(2)
+        return (processed * weights).sum(dim=-1)
+
+
+class TFT(nn.Module):
+    def __init__(self, n_features, hidden=64, heads=4, dropout=0.1):
+        super().__init__()
+        self.vsn     = VSN(n_features, hidden, dropout)
+        self.lstm    = nn.LSTM(hidden, hidden, batch_first=True)
+        self.attn    = nn.MultiheadAttention(hidden, heads, dropout=dropout, batch_first=True)
+        self.grn_out = GRN(hidden, hidden, hidden, dropout)
+        self.norm1   = nn.LayerNorm(hidden)
+        self.norm2   = nn.LayerNorm(hidden)
+        self.fc_out  = nn.Linear(hidden, 1)
+
+    def forward(self, x):
+        x           = self.vsn(x)
+        lstm_out, _ = self.lstm(x)
+        lstm_out    = self.norm1(lstm_out + x)
+        attn_out, _ = self.attn(lstm_out, lstm_out, lstm_out)
+        attn_out    = self.norm2(attn_out + lstm_out)
+        out         = self.grn_out(attn_out[:, -1, :])
+        return self.fc_out(out).squeeze(-1)
+
+
+# -------------------------------------------------------
+# FUNCION DE ENTRENAMIENTO CON EARLY STOPPING
+# -------------------------------------------------------
+
+def entrenar(model, train_loader, val_loader, epochs, lr, patience):
+    optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion  = nn.MSELoss()
+    best_val   = np.inf
+    best_state = None
+    wait       = 0
+
+    for epoch in range(epochs):
+        model.train()
+        for Xb, yb in train_loader:
+            Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
+            optimizer.zero_grad()
+            loss = criterion(model(Xb), yb)
+            loss.backward()
+            optimizer.step()
+
+        # evaluo en validacion para el early stopping
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for Xb, yb in val_loader:
+                Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
+                val_loss += criterion(model(Xb), yb).item()
+        val_loss /= len(val_loader)
+
+        if val_loss < best_val:
+            best_val   = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            wait       = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                break
+
+    model.load_state_dict(best_state)
+    return model
+
+
+# -------------------------------------------------------
+# GRID SEARCH + ENTRENAMIENTO FINAL
+# -------------------------------------------------------
+
+mejores_configs    = []
+resultados_finales = []
+
+for empresa_csv, nombre in zip(empresas_csv, nombres):
+    print(f"\n{nombre.upper()}")
+
+    df = pd.read_csv(f'{DRIVE_PATH}dataset_{empresa_csv}.csv',
+                     index_col='date', parse_dates=True).dropna()
+    df      = df[~df.index.duplicated(keep='first')]
+    n_train = int(len(df) * TRAIN_RATIO)
+
+    for h in HORIZONTES:
+        print(f"  Horizonte {h} dias")
+        target_col = f'target_{h}'
+
+        for label, features in CONFIGURACIONES.items():
+
+            cols = list(dict.fromkeys(features + ['adj_close', target_col]))
+            data = df[cols].dropna().copy()
+            data = data[~data.index.duplicated(keep='first')].reset_index()
+
+            # predigo la diferencia de precio para evitar extrapolacion fuera del rango de entrenamiento
+            data['target_diff'] = data[target_col].values - data['adj_close'].values
+
+            n    = len(data)
+            n_tr = int(n * TRAIN_RATIO)
+            n_val = int(n_tr * 0.10)
+
+            X_all      = data[features].values
+            y_all      = data['target_diff'].values
+            close_all  = data['adj_close'].values
+            target_all = data[target_col].values
+
+            # normalizo solo con datos de train para no filtrar informacion futura
+            scaler_X = StandardScaler()
+            scaler_y = StandardScaler()
+            X_sc = np.concatenate([
+                scaler_X.fit_transform(X_all[:n_tr]),
+                scaler_X.transform(X_all[n_tr:])
+            ])
+            y_sc = np.concatenate([
+                scaler_y.fit_transform(y_all[:n_tr].reshape(-1,1)).flatten(),
+                scaler_y.transform(y_all[n_tr:].reshape(-1,1)).flatten()
+            ])
+
+            mejor_mape   = np.inf
+            mejor_params = None
+
+            # grid search sobre hiperparametros
+            for hidden in HIDDENS:
+                for heads in HEADS:
+                    for dropout in DROPOUTS:
+                        for window in WINDOWS:
+
+                            train_ds = SeriesDataset(X_sc[:n_tr - n_val], y_sc[:n_tr - n_val], window)
+                            val_ds   = SeriesDataset(X_sc[n_tr - n_val - window:n_tr], y_sc[n_tr - n_val - window:n_tr], window)
+                            test_ds  = SeriesDataset(X_sc[n_tr - window:], y_sc[n_tr - window:], window)
+
+                            train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
+                            val_loader   = DataLoader(val_ds,   batch_size=BATCH, shuffle=False)
+                            test_loader  = DataLoader(test_ds,  batch_size=BATCH, shuffle=False)
+
+                            model = TFT(len(features), hidden, heads, dropout).to(DEVICE)
+                            model = entrenar(model, train_loader, val_loader, EPOCHS, LR, PATIENCE)
+
+                            model.eval()
+                            preds = []
+                            with torch.no_grad():
+                                for Xb, _ in test_loader:
+                                    preds.append(model(Xb.to(DEVICE)).cpu().numpy())
+
+                            y_pred_diff = scaler_y.inverse_transform(
+                                np.concatenate(preds).reshape(-1,1)).flatten()
+                            n_preds = len(y_pred_diff)
+                            y_pred  = y_pred_diff + close_all[n_tr:n_tr + n_preds]
+                            y_real  = target_all[n_tr:n_tr + n_preds]
+
+                            mape = np.mean(np.abs((y_real - y_pred) / y_real)) * 100
+
+                            if mape < mejor_mape:
+                                mejor_mape   = mape
+                                mejor_params = (hidden, heads, dropout, window)
+
+            # reentrano el modelo final con los mejores hiperparametros encontrados
+            hidden, heads, dropout, window = mejor_params
+            print(f"    {label} → hidden={hidden}, heads={heads}, drop={dropout}, window={window}, MAPE={mejor_mape:.2f}%")
+
+            train_ds = SeriesDataset(X_sc[:n_tr - n_val], y_sc[:n_tr - n_val], window)
+            val_ds   = SeriesDataset(X_sc[n_tr - n_val - window:n_tr], y_sc[n_tr - n_val - window:n_tr], window)
+            test_ds  = SeriesDataset(X_sc[n_tr - window:], y_sc[n_tr - window:], window)
+
+            train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
+            val_loader   = DataLoader(val_ds,   batch_size=BATCH, shuffle=False)
+            test_loader  = DataLoader(test_ds,  batch_size=BATCH, shuffle=False)
+
+            model = TFT(len(features), hidden, heads, dropout).to(DEVICE)
+            model = entrenar(model, train_loader, val_loader, EPOCHS, LR, PATIENCE)
+
+            model.eval()
+            preds      = []
+            fechas_test = data['date'].values[n_tr:] if 'date' in data.columns else data.index[n_tr:]
+            with torch.no_grad():
+                for Xb, _ in test_loader:
+                    preds.append(model(Xb.to(DEVICE)).cpu().numpy())
+
+            y_pred_diff = scaler_y.inverse_transform(
+                np.concatenate(preds).reshape(-1,1)).flatten()
+            n_preds = len(y_pred_diff)
+            y_pred  = y_pred_diff + close_all[n_tr:n_tr + n_preds]
+            y_real  = target_all[n_tr:n_tr + n_preds]
+
+            mae  = mean_absolute_error(y_real, y_pred)
+            rmse = np.sqrt(mean_squared_error(y_real, y_pred))
+            mape = np.mean(np.abs((y_real - y_pred) / y_real)) * 100
+
+            print(f"    {label}: MAE={mae:.3f}  RMSE={rmse:.3f}  MAPE={mape:.2f}%")
+
+            # guardo las predicciones para usarlas despues en las graficas
+            label_limpio = label.replace(' ', '_')
+            pd.DataFrame({
+                'fecha': fechas_test[:n_preds],
+                'real':  y_real,
+                'pred':  y_pred
+            }).to_csv(f'{DRIVE_PATH}pred_tft_{empresa_csv}_{label_limpio}_{h}d.csv', index=False)
+
+            mejores_configs.append({
+                'empresa': nombre, 'label': label, 'h': h,
+                'hidden': hidden, 'heads': heads, 'dropout': dropout, 'window': window
+            })
+            resultados_finales.append({
+                'empresa': nombre, 'modelo': label, 'horizonte': h,
+                'MAE': round(mae, 3), 'RMSE': round(rmse, 3), 'MAPE': round(mape, 2)
+            })
+
+pd.DataFrame(mejores_configs).to_csv(f'{DRIVE_PATH}mejores_configs_tft.csv', index=False)
+pd.DataFrame(resultados_finales).to_csv(f'{DRIVE_PATH}resultados_tft_final.csv', index=False)
+print("\nresultados guardados")
