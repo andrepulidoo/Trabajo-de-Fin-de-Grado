@@ -1,0 +1,103 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import os
+
+os.chdir(r'C:/Users/andre/OneDrive/Documentos/TFG')
+
+empresas   = ['microsoft', 'meta', 'google', 'amazon']
+nombres    = ['Microsoft', 'Meta', 'Alphabet', 'Amazon']
+colores    = {'microsoft': '#006AD7', 'meta': '#21277B', 
+              'google': '#9AD9EA', 'amazon': '#5F83B1'}
+
+
+
+# todas las combinaciones a plotear en el anexo
+MODELOS_HORIZONTES = [
+    ('ARIMA',        10),
+    ('ARIMA',        20),
+    ('LSTM',         20),
+    ('LSTM_VADER',    5),
+    ('LSTM_VADER',   10),
+    ('LSTM_VADER',   20),
+    ('LSTM_FinBERT',  5),
+    ('LSTM_FinBERT', 20),
+    ('TFT',           5),
+    ('TFT',          10),
+    ('TFT',          20),
+    ('TFT_VADER',     5),
+    ('TFT_VADER',    10),
+    ('TFT_VADER',    20),
+    ('TFT_FinBERT',   5),
+    ('TFT_FinBERT',  20),
+]
+
+def cargar_predicciones(empresa, modelo, horizonte):
+    # intenta leer el csv de predicciones
+    nombre_archivo = f'pred_tft_{empresa}_{modelo}_{horizonte}d.csv'
+    try:
+        df = pd.read_csv(nombre_archivo, parse_dates=['fecha'])
+        return df
+    except FileNotFoundError:
+        print(f'  No encontrado: {nombre_archivo}')
+        return None
+
+def plotear_figura(modelo, horizonte, fig_num):
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharey=False)
+    axes = axes.flatten()
+
+    titulo_modelo = modelo.replace('_', ' ')
+    fig.suptitle(f'Predicciones del modelo {titulo_modelo} — horizonte {horizonte} días\nPeríodo de test 2025',
+                 fontsize=14, fontweight='bold', y=1.01)
+
+    alguno_cargado = False
+
+    for ax, empresa, nombre in zip(axes, empresas, nombres):
+        color = colores[empresa]
+        df = cargar_predicciones(empresa, modelo, horizonte)
+
+        if df is None:
+            ax.text(0.5, 0.5, f'Sin datos\n({empresa})',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=12, color='gray')
+            ax.set_title(nombre, fontsize=12, fontweight='bold', color='black')
+            continue
+
+        alguno_cargado = True
+        ax.plot(df['fecha'], df['real'], color='#333333', linewidth=1.2, label='Real')
+        ax.plot(df['fecha'], df['pred'], color=color,    linewidth=1.2, label='Predicción', linestyle='--')
+
+        ax.set_title(nombre, fontsize=12, fontweight='bold', color=color)
+        ax.set_ylabel('Precio (USD)', fontsize=10)
+        ax.tick_params(axis='x', rotation=30, labelsize=8)
+        ax.tick_params(axis='y', labelsize=9)
+        ax.grid(axis='y', linestyle='--', alpha=0.4)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if not alguno_cargado:
+        plt.close()
+        print(f'  Figura {fig_num} omitida (sin datos)')
+        return
+
+    handles = [
+        mpatches.Patch(color='#333333', label='Real'),
+        mpatches.Patch(color='gray',    label='Predicción (varía por empresa)'),
+    ]
+    fig.legend(handles=handles, loc='lower center', ncol=2,
+               fontsize=10, bbox_to_anchor=(0.5, -0.04), frameon=False)
+
+    plt.tight_layout()
+    nombre_fig = f'fig_anexo_{fig_num}_{modelo}_{horizonte}d.png'
+    plt.savefig(nombre_fig, dpi=150, bbox_inches='tight')
+    plt.show()
+    print(f'  Guardada: {nombre_fig}')
+    plt.close()
+
+
+print('Generando figuras del anexo...\n')
+for i, (modelo, horizonte) in enumerate(MODELOS_HORIZONTES, start=1):
+    print(f'[{i}/{len(MODELOS_HORIZONTES)}] {modelo} — h={horizonte}...')
+    plotear_figura(modelo, horizonte, i)
+
+print('\nListo.')
